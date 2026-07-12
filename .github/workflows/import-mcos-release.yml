@@ -83,11 +83,20 @@ jobs:
           if expected_total is None or set(chunks) != set(range(1, expected_total + 1)):
               raise SystemExit("Missing installer source chunks")
 
-          installer_text = "".join(chunks[index] for index in range(1, expected_total + 1))
-          installer_data = installer_text.encode("utf-8")
-          actual_digest = hashlib.sha256(installer_data).hexdigest()
+          uploaded_text = "".join(chunks[index] for index in range(1, expected_total + 1))
+          uploaded_data = uploaded_text.encode("utf-8")
+          actual_digest = hashlib.sha256(uploaded_data).hexdigest()
           if actual_digest != expected_digest:
-              raise SystemExit(f"Installer SHA-256 mismatch: {actual_digest}")
+              raise SystemExit(f"Uploaded installer SHA-256 mismatch: {actual_digest}")
+
+          # The preview source still had two user-facing 'McOS 2' badges. Normalize
+          # those labels only after verifying the uploaded source byte-for-byte.
+          if uploaded_text.count('OS_NAME .. " 2"') != 2:
+              raise SystemExit("Unexpected number of legacy display labels")
+          installer_text = uploaded_text.replace('OS_NAME .. " 2"', 'OS_NAME .. " 1.0"')
+          installer_data = installer_text.encode("utf-8")
+          if hashlib.sha256(installer_data).hexdigest() != "56e588de3e5de4c3d5742df21d8b5f0532bf5413c71c80388568ba407c88039d":
+              raise SystemExit("Normalized installer SHA-256 mismatch")
 
           main_match = re.search(
               r"\{ path = '/mcos/system/main\.lua', data = \[===\[(.*?)\]===\], optional = false \},",
@@ -106,8 +115,10 @@ jobs:
               raise SystemExit("Installer version is not 1.0.0")
           if 'local OS_VERSION = "1.0.0"' not in main_text:
               raise SystemExit("Core version is not 1.0.0")
-          if hashlib.sha256(main_text.encode("utf-8")).hexdigest() != "305677e98b0ca09715eb66559a51ecc9a138023c0705da670fab5cd07a75ff71":
-              raise SystemExit("Embedded core SHA-256 mismatch")
+          if 'OS_NAME .. " 2"' in installer_text or 'OS_NAME .. " 2"' in main_text:
+              raise SystemExit("A legacy McOS 2 display label remains")
+          if hashlib.sha256(main_text.encode("utf-8")).hexdigest() != "46d39d046242c828466dd9eaa03e3e05f02fa161845b1c070ee3d51eecb63148":
+              raise SystemExit("Normalized core SHA-256 mismatch")
           PY
 
       - name: Commit imported release and remove importer
