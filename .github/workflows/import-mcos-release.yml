@@ -35,7 +35,7 @@ jobs:
           issue = os.environ["ISSUE_NUMBER"]
           token = os.environ["GH_TOKEN"]
           pattern = re.compile(
-              r"^MCOS_ARCHIVE_CHUNK index=(\d+) total=(\d+) sha256=([0-9a-f]{64})\n([A-Za-z0-9+/=]+)$"
+              r"^MCOS_BULK_CHUNK index=(\d+) total=(\d+) sha256=([0-9a-f]{64})\n([A-Za-z0-9+/=]+)$"
           )
 
           comments = []
