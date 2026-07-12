@@ -32,9 +32,8 @@ jobs:
           repository = os.environ["REPOSITORY"]
           issue = os.environ["ISSUE_NUMBER"]
           token = os.environ["GH_TOKEN"]
-          allowed = {"installer.lua", "mcos/system/main.lua"}
           header_pattern = re.compile(
-              r"^MCOS_SOURCE_CHUNK path=(\S+) index=(\d+) total=(\d+) sha256=([0-9a-f]{64})$"
+              r"^MCOS_SOURCE_CHUNK path=installer\.lua index=(\d+) total=(\d+) sha256=([0-9a-f]{64})$"
           )
           sentinel = "\nMCOS_SOURCE_END"
 
@@ -58,7 +57,8 @@ jobs:
               page += 1
 
           chunks = {}
-          metadata = {}
+          expected_total = None
+          expected_digest = None
           for comment in comments:
               body = comment.get("body", "")
               header, separator, payload = body.partition("\n")
@@ -70,40 +70,44 @@ jobs:
               if not payload.endswith(sentinel):
                   raise SystemExit("Source chunk is missing its end sentinel")
               payload = payload[:-len(sentinel)]
-              path, index, total, digest = match.groups()
-              if path not in allowed:
-                  raise SystemExit(f"Unexpected target path: {path}")
+              index, total, digest = match.groups()
               index, total = int(index), int(total)
               if index < 1 or total < 1 or index > total:
-                  raise SystemExit(f"Invalid chunk numbering for {path}")
-              chunks.setdefault(path, {})[index] = payload
-              previous = metadata.setdefault(path, (total, digest))
-              if previous != (total, digest):
-                  raise SystemExit(f"Conflicting metadata for {path}")
+                  raise SystemExit("Invalid installer chunk numbering")
+              if expected_total is None:
+                  expected_total, expected_digest = total, digest
+              if (total, digest) != (expected_total, expected_digest):
+                  raise SystemExit("Conflicting installer metadata")
+              chunks[index] = payload
 
-          if set(chunks) != allowed:
-              raise SystemExit(f"Missing release files: {sorted(allowed - set(chunks))}")
+          if expected_total is None or set(chunks) != set(range(1, expected_total + 1)):
+              raise SystemExit("Missing installer source chunks")
 
-          for path in sorted(allowed):
-              total, expected_digest = metadata[path]
-              parts = chunks[path]
-              if set(parts) != set(range(1, total + 1)):
-                  raise SystemExit(f"Missing chunks for {path}")
-              text = "".join(parts[index] for index in range(1, total + 1))
-              data = text.encode("utf-8")
-              actual_digest = hashlib.sha256(data).hexdigest()
-              if actual_digest != expected_digest:
-                  raise SystemExit(f"SHA-256 mismatch for {path}: {actual_digest}")
-              target = pathlib.Path(path)
-              target.parent.mkdir(parents=True, exist_ok=True)
-              target.write_bytes(data)
+          installer_text = "".join(chunks[index] for index in range(1, expected_total + 1))
+          installer_data = installer_text.encode("utf-8")
+          actual_digest = hashlib.sha256(installer_data).hexdigest()
+          if actual_digest != expected_digest:
+              raise SystemExit(f"Installer SHA-256 mismatch: {actual_digest}")
 
-          main = pathlib.Path("mcos/system/main.lua").read_text(encoding="utf-8")
-          installer = pathlib.Path("installer.lua").read_text(encoding="utf-8")
-          if 'local OS_VERSION = "1.0.0"' not in main:
-              raise SystemExit("Core version is not 1.0.0")
-          if 'local VERSION = "1.0.0"' not in installer:
+          main_match = re.search(
+              r"\{ path = '/mcos/system/main\.lua', data = \[===\[(.*?)\]===\], optional = false \},",
+              installer_text,
+              re.DOTALL,
+          )
+          if not main_match:
+              raise SystemExit("Unable to extract the embedded McOS core")
+          main_text = main_match.group(1)
+
+          pathlib.Path("installer.lua").write_bytes(installer_data)
+          pathlib.Path("mcos/system").mkdir(parents=True, exist_ok=True)
+          pathlib.Path("mcos/system/main.lua").write_text(main_text, encoding="utf-8")
+
+          if 'local VERSION = "1.0.0"' not in installer_text:
               raise SystemExit("Installer version is not 1.0.0")
+          if 'local OS_VERSION = "1.0.0"' not in main_text:
+              raise SystemExit("Core version is not 1.0.0")
+          if hashlib.sha256(main_text.encode("utf-8")).hexdigest() != "305677e98b0ca09715eb66559a51ecc9a138023c0705da670fab5cd07a75ff71":
+              raise SystemExit("Embedded core SHA-256 mismatch")
           PY
 
       - name: Commit imported release and remove importer
