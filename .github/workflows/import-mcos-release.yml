@@ -15,27 +15,26 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Reconstruct, verify, and extract release archive
+      - name: Reconstruct and verify release sources
         env:
           GH_TOKEN: ${{ github.token }}
           REPOSITORY: ${{ github.repository }}
           ISSUE_NUMBER: ${{ github.event.issue.number }}
         run: |
           python3 - <<'PY'
-          import base64
           import hashlib
           import json
           import os
           import pathlib
           import re
-          import tarfile
           import urllib.request
 
           repository = os.environ["REPOSITORY"]
           issue = os.environ["ISSUE_NUMBER"]
           token = os.environ["GH_TOKEN"]
-          pattern = re.compile(
-              r"^MCOS_BULK_CHUNK index=(\d+) total=(\d+) sha256=([0-9a-f]{64})\n([A-Za-z0-9+/=]+)$"
+          allowed = {"installer.lua", "mcos/system/main.lua"}
+          header_pattern = re.compile(
+              r"^MCOS_SOURCE_CHUNK path=(\S+) index=(\d+) total=(\d+) sha256=([0-9a-f]{64})$"
           )
 
           comments = []
@@ -57,40 +56,43 @@ jobs:
                   break
               page += 1
 
-          parts = {}
-          expected_total = None
-          expected_digest = None
+          chunks = {}
+          metadata = {}
           for comment in comments:
-              match = pattern.match(comment.get("body", ""))
+              body = comment.get("body", "")
+              header, separator, payload = body.partition("\n")
+              if not separator:
+                  continue
+              match = header_pattern.match(header)
               if not match:
                   continue
-              index, total, digest, payload = match.groups()
+              path, index, total, digest = match.groups()
+              if path not in allowed:
+                  raise SystemExit(f"Unexpected target path: {path}")
               index, total = int(index), int(total)
               if index < 1 or total < 1 or index > total:
-                  raise SystemExit("Invalid archive chunk numbering")
-              if expected_total is None:
-                  expected_total, expected_digest = total, digest
-              if (total, digest) != (expected_total, expected_digest):
-                  raise SystemExit("Conflicting archive metadata")
-              parts[index] = payload
+                  raise SystemExit(f"Invalid chunk numbering for {path}")
+              chunks.setdefault(path, {})[index] = payload
+              previous = metadata.setdefault(path, (total, digest))
+              if previous != (total, digest):
+                  raise SystemExit(f"Conflicting metadata for {path}")
 
-          if expected_total is None or set(parts) != set(range(1, expected_total + 1)):
-              raise SystemExit("Missing release archive chunks")
+          if set(chunks) != allowed:
+              raise SystemExit(f"Missing release files: {sorted(allowed - set(chunks))}")
 
-          encoded = "".join(parts[index] for index in range(1, expected_total + 1))
-          archive_data = base64.b64decode(encoded, validate=True)
-          actual_digest = hashlib.sha256(archive_data).hexdigest()
-          if actual_digest != expected_digest:
-              raise SystemExit("Release archive SHA-256 mismatch")
-
-          archive = pathlib.Path("/tmp/mcos-release.tar.gz")
-          archive.write_bytes(archive_data)
-          with tarfile.open(archive, "r:gz") as bundle:
-              for member in bundle.getmembers():
-                  path = pathlib.PurePosixPath(member.name)
-                  if path.is_absolute() or ".." in path.parts or member.issym() or member.islnk():
-                      raise SystemExit(f"Unsafe archive entry: {member.name}")
-              bundle.extractall(".")
+          for path in sorted(allowed):
+              total, expected_digest = metadata[path]
+              parts = chunks[path]
+              if set(parts) != set(range(1, total + 1)):
+                  raise SystemExit(f"Missing chunks for {path}")
+              text = "".join(parts[index] for index in range(1, total + 1))
+              data = text.encode("utf-8")
+              actual_digest = hashlib.sha256(data).hexdigest()
+              if actual_digest != expected_digest:
+                  raise SystemExit(f"SHA-256 mismatch for {path}: {actual_digest}")
+              target = pathlib.Path(path)
+              target.parent.mkdir(parents=True, exist_ok=True)
+              target.write_bytes(data)
 
           main = pathlib.Path("mcos/system/main.lua").read_text(encoding="utf-8")
           installer = pathlib.Path("installer.lua").read_text(encoding="utf-8")
