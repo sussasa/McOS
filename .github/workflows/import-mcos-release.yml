@@ -36,6 +36,7 @@ jobs:
           header_pattern = re.compile(
               r"^MCOS_SOURCE_CHUNK path=(\S+) index=(\d+) total=(\d+) sha256=([0-9a-f]{64})$"
           )
+          sentinel = "\nMCOS_SOURCE_END"
 
           comments = []
           page = 1
@@ -66,6 +67,9 @@ jobs:
               match = header_pattern.match(header)
               if not match:
                   continue
+              if not payload.endswith(sentinel):
+                  raise SystemExit("Source chunk is missing its end sentinel")
+              payload = payload[:-len(sentinel)]
               path, index, total, digest = match.groups()
               if path not in allowed:
                   raise SystemExit(f"Unexpected target path: {path}")
